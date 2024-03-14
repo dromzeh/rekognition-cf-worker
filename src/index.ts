@@ -4,8 +4,10 @@ import { z } from 'zod'
 import {
     RekognitionClient,
     DetectModerationLabelsCommand,
+    type DetectModerationLabelsCommandOutput,
 } from '@aws-sdk/client-rekognition'
 import { bearerAuth } from 'hono/bearer-auth'
+import { Context } from 'hono'
 
 type Bindings = {
     AWS_ACCESS_KEY_ID: string
@@ -26,6 +28,38 @@ app.use('*', async (c, next) => {
     return auth(c, next)
 })
 
+const createRekognitionClient = (c: Context) => {
+    return new RekognitionClient({
+        region: 'us-west-2',
+        credentials: {
+            accessKeyId: c.env.AWS_ACCESS_KEY_ID,
+            secretAccessKey: c.env.AWS_SECRET_ACCESS_KEY,
+        },
+    })
+}
+
+const extractModerationLabels = (
+    response: DetectModerationLabelsCommandOutput,
+) => {
+    const moderationLabels = []
+    if (response.ModerationLabels && response.ModerationLabels.length > 0) {
+        const labels = []
+        for (const label of response.ModerationLabels) {
+            labels.push({
+                name: label.Name,
+                confidence: label.Confidence,
+            })
+        }
+
+        if (labels.length > 0) {
+            moderationLabels.push({
+                labels: labels,
+            })
+        }
+    }
+    return moderationLabels
+}
+
 app.post(
     '/moderate',
     validator('form', (value, c) => {
@@ -44,56 +78,30 @@ app.post(
             return new Uint8Array(buffer)
         })
 
-        try {
-            const client = new RekognitionClient({
-                // todo: base this off CF region
-                region: 'us-west-2',
-                credentials: {
-                    accessKeyId: c.env.AWS_ACCESS_KEY_ID,
-                    secretAccessKey: c.env.AWS_SECRET_ACCESS_KEY,
-                },
-            })
+        const client = createRekognitionClient(c)
 
-            const command = new DetectModerationLabelsCommand({
-                Image: {
-                    Bytes: u8,
-                },
-                MinConfidence: 60,
-            })
+        const command = new DetectModerationLabelsCommand({
+            Image: {
+                Bytes: u8,
+            },
+            MinConfidence: 60,
+        })
 
-            const moderationLabels = []
+        const response = await client.send(command)
 
-            const response = await client.send(command)
+        const moderationLabels = extractModerationLabels(response)
 
-            if (
-                response.ModerationLabels &&
-                response.ModerationLabels.length > 0
-            ) {
-                const labels = []
-                for (const label of response.ModerationLabels) {
-                    labels.push({
-                        name: label.Name,
-                        confidence: label.Confidence,
-                    })
-                }
-
-                if (labels.length > 0) {
-                    moderationLabels.push({
-                        labels: labels,
-                    })
-                }
-            }
-
-            return c.json({ moderationLabels })
-        } catch (error) {
-            console.error(error)
-            return c.json({ error: 'Error calling API' }, 500)
-        }
+        return c.json({ moderationLabels })
     },
 )
 
 app.get('/', (c) => {
     return c.json({ status: 'ok' })
+})
+
+app.onError((err, c) => {
+    console.error(err)
+    return c.json({ error: 'Internal Server Error' }, 500)
 })
 
 export default app
