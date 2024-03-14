@@ -45,7 +45,7 @@ app.post(
         })
 
         try {
-          const client = new RekognitionClient({
+            const client = new RekognitionClient({
                 // todo: base this off CF region
                 region: 'us-west-2',
                 credentials: {
@@ -91,5 +91,9 @@ app.post(
         }
     },
 )
+
+app.get('/', (c) => {
+    return c.json({ status: 'ok' })
+})
 
 export default app
