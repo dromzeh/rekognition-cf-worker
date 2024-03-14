@@ -1,13 +1,11 @@
 import { Hono } from 'hono'
 import { validator } from 'hono/validator'
 import { z } from 'zod'
+import { DetectModerationLabelsCommand } from '@aws-sdk/client-rekognition'
 import {
-    RekognitionClient,
-    DetectModerationLabelsCommand,
-    type DetectModerationLabelsCommandOutput,
-} from '@aws-sdk/client-rekognition'
-import { bearerAuth } from 'hono/bearer-auth'
-import { Context } from 'hono'
+    createRekognitionClient,
+    extractModerationLabels,
+} from './lib/rekognition-client'
 
 type Bindings = {
     AWS_ACCESS_KEY_ID: string
@@ -15,53 +13,14 @@ type Bindings = {
     BEARER_TOKEN: string
 }
 
-const app = new Hono<{ Bindings: Bindings }>()
-
 const schema = z.object({
     file: z.any(),
 })
 
-app.use('*', async (c, next) => {
-    const auth = bearerAuth({
-        token: c.env.BEARER_TOKEN,
-    })
-    return auth(c, next)
-})
-
-const createRekognitionClient = (c: Context) => {
-    return new RekognitionClient({
-        region: 'us-west-2',
-        credentials: {
-            accessKeyId: c.env.AWS_ACCESS_KEY_ID,
-            secretAccessKey: c.env.AWS_SECRET_ACCESS_KEY,
-        },
-    })
-}
-
-const extractModerationLabels = (
-    response: DetectModerationLabelsCommandOutput,
-) => {
-    const moderationLabels = []
-    if (response.ModerationLabels && response.ModerationLabels.length > 0) {
-        const labels = []
-        for (const label of response.ModerationLabels) {
-            labels.push({
-                name: label.Name,
-                confidence: label.Confidence,
-            })
-        }
-
-        if (labels.length > 0) {
-            moderationLabels.push({
-                labels: labels,
-            })
-        }
-    }
-    return moderationLabels
-}
+const app = new Hono<{ Bindings: Bindings }>()
 
 app.post(
-    '/moderate',
+    '/labels',
     validator('form', (value, c) => {
         const parsed = schema.safeParse(value)
         console.log(parsed)
@@ -72,6 +31,14 @@ app.post(
         return parsed.data
     }),
     async (c) => {
+        const token = c.req.header('Authorization')
+
+        if (!token) {
+            return c.text('Unauthorized', 401)
+        } else if (token !== `Bearer ${c.env.BEARER_TOKEN}`) {
+            return c.text('Unauthorized', 401)
+        }
+
         const { file } = c.req.valid('form') as { file: File }
 
         const u8 = await file.arrayBuffer().then((buffer) => {
@@ -96,7 +63,8 @@ app.post(
 )
 
 app.get('/', (c) => {
-    return c.json({ status: 'ok' })
+    const routes = app.routes
+    return c.json({ status: 'ok', routes: routes })
 })
 
 app.onError((err, c) => {
